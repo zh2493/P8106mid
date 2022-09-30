@@ -1,0 +1,92 @@
+---
+title: "try"
+author: "ZiqianHe"
+date: "3/27/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(caret)
+library(glmnet)
+library(earth)
+library(mgcv)
+library(splines)
+library(gam)
+library(boot)
+library(pdp)
+library(skimr)
+library(modelr)
+library(mlbench)
+library(pROC)
+library(AppliedPredictiveModeling)
+library(MASS)
+library(vip)
+library(ggplot2)
+
+set.seed(2022)
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+```
+
+
+```{r ,echo=F,warning=FALSE}
+ctrl <- trainControl(method = "repeatedcv",
+                     repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+wine_data = read.csv("./winequalityred.csv") %>%
+  janitor::clean_names() %>%
+  na.omit() %>%
+  rename(ph = p_h
+         ) %>% 
+  mutate(quality = case_when(quality > 6.5 ~ "good",
+       quality < 6.5 ~ "bad"),
+       quality = fct_relevel(quality, c("bad", "good")),
+       quality = as.factor(quality))
+
+skimr::skim_without_charts(wine_data)
+
+# split
+train = createDataPartition(wine_data$quality,p=0.8,list = F)
+
+# matrix of predictors 
+x <- model.matrix(quality~.,wine_data)[train,-1]
+x2 <- model.matrix(quality~.,wine_data)[-train,-1]
+
+# vector of response
+y <- wine_data$quality[train]
+y2 <- wine_data$quality[train]
+
+
+```
+
+
+```{r,echo=F,warning=FALSE}
+enet.fit <- train(x, y,
+                     method = "glmnet",
+                     tuneGrid = expand.grid(alpha = seq(0, 1, length = 5), 
+                                            lambda = exp(seq(-10, -5, length=50))),
+                     preProc = c("center", "scale", "medianImpute"),
+                     trControl = ctrl)
+plot_enet = plot(enet.fit)
+model.lda <- train(x = x,
+                   y = y,
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+```

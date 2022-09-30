@@ -1,0 +1,286 @@
+---
+title: "Midterm"
+author: "ZiqianHe"
+date: "3/26/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(caret)
+library(glmnet)
+library(earth)
+library(mgcv)
+library(splines)
+library(gam)
+library(boot)
+library(pdp)
+library(skimr)
+library(modelr)
+library(mlbench)
+library(pROC)
+library(AppliedPredictiveModeling)
+library(MASS)
+library(vip)
+library(ggplot2)
+
+set.seed(2022)
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+```
+
+# Introduction
+
+This datasets is related to red variants of the Portuguese "Vinho Verde" wine from the reference [Cortez et al., 2009]. Due to privacy and logistic issues, only physicochemical (inputs) and sensory (the output) variables are available (e.g. there is no data about grape types, wine brand, wine selling price.\
+The `wine data` is a dataset with 1599 observations, with 11 variables and 1 response. 
+
+## response:
+
+* `quality`: score between 0 and 10, > 6.5 is good 
+
+## variables
+
+* `fixed acidity`: most acids involved with wine or fixed or nonvolatile\
+
+* `volatile acidity`: the amount of acetic acid in wine, which at too high of levels can lead to an unpleasant, vinegar taste\
+
+* `citric acid`: found in small quantities, citric acid can add 'freshness' and flavor to wines\
+
+* `residual sugar`: the amount of sugar remaining after fermentation stops,\
+
+* `chlorides`: the amount of salt in the wine\
+
+* `free sulfur dioxide`: the free form of SO2 exists in equilibrium between molecular SO2 and bisulfite ions\
+
+* `total sulfur dioxide`: amount of free and bound forms of S02\
+
+* `density`: the density of water is close to that of water depending on the percent alcohol and sugar content\
+
+* `pH`: describes how acidic or basic a wine is on a scale from 0 (very acidic) to 14 (very basic)\
+
+* `sulphates`: a wine additive which can contribute to sulfur dioxide gas (S02) levels\
+
+* `alcohol`: alcohol concentration\
+
+To understand the relationship between the quality and other variables. I split the quality into two groups with the requirement of the data and then change it to factor. The dataset was randomly split into traning and testing datasets(80% vs 20%) and will fit different models.
+
+```{r ,echo=F,warning=FALSE}
+wine_data = read.csv("./winequalityred.csv") %>%
+  janitor::clean_names() %>%
+  na.omit() %>%
+  rename(ph = p_h
+         ) %>% 
+  mutate(quality = case_when(quality > 6.5 ~ "good",
+       quality < 6.5 ~ "bad"),
+       quality = fct_relevel(quality, c("bad", "good")),
+       quality = as.factor(quality))
+
+skimr::skim_without_charts(wine_data)
+
+# split
+train = createDataPartition(wine_data$quality,p=0.8,list = F)
+
+# matrix of predictors 
+x <- model.matrix(quality~.,wine_data)[train,-1]
+x2 <- model.matrix(quality~.,wine_data)[-train,-1]
+
+# vector of response
+y <- wine_data$quality[train]
+y2 <- wine_data$quality[train]
+
+```
+
+# Exploratory analysis
+
+From the `Figure 1.` we can find that `alcohol`, `citric acid` and `volatile acidity` may be statistical significant for the model. It seems that the quality increase with the increase of them.
+
+# Models
+
+We choose `GLM`, `GLMNET`, `GAM` `MARS`, `LDA`, `RIDGE` and `ELASTIC` to train the data with 5-fold cross validation.\
+The linear regression model was first fitted, the use GENERALIZED ADDITIVE MODEL (GAM) and MULTIVARIATE ADPTIVE REGRESSION SPLINES MODEL(MARS) to capture the non-linear relationship between the response and the variables.
+Figure 2-4. are some of the plot of the models.
+```{r,echo=F,warning=FALSE}
+ctrl <- trainControl(method = "repeatedcv",
+                     repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+model.glm <- train(x = x,
+                   y = y,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+logistic_model =
+  train(
+    x,
+    y,
+    method = "glmnet",
+    tuneGrid = expand.grid(alpha = seq(0,1,length=6),
+                           lambda = exp(seq(
+                             6, to = -6, length = 50
+                           ))),
+    family = "binomial",
+    preProcess = c("knnImpute", "center", "scale"),
+    metric = "ROC",
+    trControl = ctrl
+  )
+
+plot_logi = ggplot(logistic_model,highlight = T) +
+  scale_x_continuous(trans = "log")+
+  labs(title = "Lasso Logistics")
+
+```
+
+```{r,echo=F,warning=FALSE}
+set.seed(2022)
+
+model.mars <- train(x = x,
+                    y = y,
+                    method = "earth",
+                    tuneGrid = expand.grid(degree = 1:4, 
+                                           nprune = 2:20),
+                    metric = "ROC",
+                    trControl = ctrl)
+
+plot_mars = ggplot(model.mars)
+```
+
+```{r,echo=F,warning=FALSE}
+set.seed(2022)
+model.gam <- train(x = x,
+                   y = y,
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+```{r,echo=F,warning=FALSE}
+set.seed(2022)
+
+lda.fit <- lda(quality~., data = wine_data,
+               subset = train)
+
+
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+model.lda <- train(x = x,
+                   y = y,
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+```{r,echo=F,warning=FALSE}
+ridge.fit = train(x, y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 0,
+                                         lambda = exp(seq(-10, 0, length = 100))),
+                  trControl = ctrl)
+```
+
+```{r,echo=F,warning=FALSE}
+enet.fit <- train(x, y,
+                     method = "glmnet",
+                     tuneGrid = expand.grid(alpha = seq(0, 1, length = 5), 
+                                            lambda = exp(seq(-10, -5, length=50))),
+                     preProc = c("center", "scale", "medianImpute"),
+                     trControl = ctrl)
+plot_enet = plot(enet.fit)
+```
+
+
+## Comparison
+
+Through the resampling (`Figure 2.`), the `GAM` has the highest ROC though our model have similar ROC performance. The model is used for quality forecasting, so I pick the top three models to draw a plot of sensitivity and found that the `MARS` and GAM have the similar sensitivity (`Figure 3.`). Considering both, `GAM` is chosen as the model.\
+
+From the test data performance we find that `alcohol`, `residual_sugar`, `fixed_acidity`, `sulpates`, `volatile_acidity`, `total_sulfur_dioxide` and `density` are statistically significant.\
+
+From the importance plot (`Figure 4.`), the `residual_sugar` has low importance to AUC loss and other variables mentioned above have high importance to AUC loss.\
+
+```{r, warning=FALSE,echo=F}
+gam.pred <- predict(model.gam, newdata = wine_data[-train,], type = "prob")[,2]
+
+roc.gam <- roc(wine_data$quality[-train], gam.pred)
+
+
+auc <- roc.gam$auc[1]
+
+test_pred = rep("bad", length(gam.pred))
+test_pred[gam.pred > 0.5] = "good"
+```
+
+
+```{r,echo=F,warning=FALSE}
+library(DALEX)
+gam = DALEX::explain(model.gam,label = "gam",data = x,y = y %>% as.numeric(),verbose = F)
+gam_important =  model_parts(gam)
+gam_int = plot(gam_important)
+```
+
+# Conclusion
+
+GAM model has higher sensitivity and predictability. `alcohol`, `residual_sugar`, `fixed_acidity`, `sulpates`, `volatile_acidity`, `total_sulfur_dioxide` and `density` are statistically significant. Which align with the original thought. If possible, we can select significant variables and remodel the models, in which case the accuracy may increase. Also we can try to find other models which can fit the dataset better such as the Naive Baye and stuff.
+
+# Appendix
+
+```{r,echo=F,warning=FALSE}
+
+featurePlot(x=x,y=y,
+            scales = list(x = list(relation = "free"),
+                          y = list(relation = "free")),
+            plot = "density",
+            pch = "|",
+            auto.key = list(columns = 2),
+            layout = c(3, 4))
+
+```
+Figure 1. Plot of the feature Plot.
+
+
+```{r,echo=F,warning=FALSE}
+res <- resamples(list(GLM = model.glm, 
+                      GLMNET = logistic_model, 
+                      GAM = model.gam,
+                      MARS = model.mars,
+                      LDA = model.lda,
+                      RIDGE = ridge.fit,
+                      ELASTIC = enet.fit))
+
+bwplot(res, metric = c("ROC"))
+```
+Figure 2. Plot of the ROC.
+
+```{r,echo=F,warning=FALSE}
+res2 <- resamples(list( 
+                      GAM = model.gam,
+                      MARS = model.mars,
+                      LDA = model.lda)
+                      )
+bwplot(res2, metric = c("Sens"))
+```
+Figure 3. Plot of the Sensitivity.
+
+```{r}
+plot(gam_int)
+```
+Figure 4. Plot of the feature importance
+
+```{r,echo=F,warning=FALSE}
+plot(roc.gam, legacy.axis = TRUE)
+```
+Figure 5. GAM ROC

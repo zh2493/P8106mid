@@ -1,0 +1,241 @@
+---
+title: "mid"
+author: "ZiqianHe"
+date: "3/26/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(caret)
+library(glmnet)
+library(earth)
+library(mgcv)
+library(splines)
+library(gam)
+library(boot)
+library(pdp)
+library(skimr)
+library(modelr)
+library(mlbench)
+library(pROC)
+library(AppliedPredictiveModeling)
+library(MASS)
+library(vip)
+library(DALEX)
+set.seed(2022)
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+```
+
+## Import & tidy dataset
+```{r ,echo=F}
+wine_data = read.csv("./winequalityred.csv") %>%
+  janitor::clean_names() %>%
+  na.omit() %>%
+  rename(ph = p_h
+         ) %>% 
+  mutate(quality = case_when(quality > 6.5 ~ "good",
+       quality < 6.5 ~ "bad"),
+       quality = fct_relevel(quality, c("bad", "good")),
+       quality = as.factor(quality)
+)
+#renamed variables
+#Descriptive Statistics
+summary(wine_data)
+skimr::skim_without_charts(wine_data)
+```
+
+## Exploratory Analysis
+```{r}
+# split
+train = createDataPartition(wine_data$quality,p=0.8,list = F)
+
+# matrix of predictors 
+x <- model.matrix(quality~.,wine_data)[train,-1]
+x2 <- model.matrix(quality~.,wine_data)[-train,-1]
+
+# vector of response
+y <- wine_data$quality[train]
+y2 <- wine_data$quality[train]
+
+featurePlot(x=x,y=y,
+            scales = list(x = list(relation = "free"),
+                          y = list(relation = "free")),
+            plot = "density",
+            pch = "|",
+            auto.key = list(columns = 2),
+            layout = c(3, 4))
+```
+
+# Models
+
+## logistic regression and Penalized logistic regression
+```{r}
+ctrl <- trainControl(method = "repeatedcv",
+                     repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+model.glm <- train(x = x,
+                   y = y,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+logistic_model =
+  train(
+    x,
+    y,
+    method = "glmnet",
+    tuneGrid = expand.grid(alpha = seq(0,1,length=6),
+                           lambda = exp(seq(
+                             6, to = -6, length = 50
+                           ))),
+    family = "binomial",
+    preProcess = c("knnImpute", "center", "scale"),
+    metric = "ROC",
+    trControl = ctrl
+  )
+
+ggplot(logistic_model,highlight = T) +
+  scale_x_continuous(trans = "log")+
+  labs(title = "Lasso Logistics")
+
+```
+
+## MARS
+```{r}
+set.seed(2022)
+
+model.mars <- train(x = x,
+                    y = y,
+                    method = "earth",
+                    tuneGrid = expand.grid(degree = 1:4, 
+                                           nprune = 2:20),
+                    metric = "ROC",
+                    trControl = ctrl)
+summary(model.mars)
+plot(model.mars)
+
+model.mars$bestTune
+coef(model.mars$finalModel) 
+```
+RSq= 0.4055629
+
+
+## GAM
+```{r}
+set.seed(2022)
+model.gam <- train(x = x,
+                   y = y,
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+
+model.gam$finalModel
+
+```
+
+
+## LDA
+```{r}
+set.seed(2022)
+
+lda.fit <- lda(quality~., data = wine_data,
+               subset = train)
+plot(lda.fit)
+
+
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+model.lda <- train(x = x,
+                   y = y,
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+model.lda$results
+
+confusionMatrix(predict(lda.fit, wine_data[-train,])$class, wine_data[-train,]$quality)
+```
+two classes, so we have k = 2-1 = 1 linear discriminants, the ROC is  0.8812505, Sensitive 0.9469959 and Specificity 0.4188235.
+
+
+## ridge
+```{r}
+ridge.fit = train(x, y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 0,
+                                         lambda = exp(seq(-10, 0, length = 100))),
+                  trControl = ctrl)
+
+plot(ridge.fit, xTrans = function(x) log(x))
+```
+
+```{r}
+enet.fit <- train(x, y,
+                     method = "glmnet",
+                     tuneGrid = expand.grid(alpha = seq(0, 1, length = 5), 
+                                            lambda = exp(seq(-10, -5, length=50))),
+                     preProc = c("center", "scale", "medianImpute"),
+                     trControl = ctrl)
+ggplot(enet.fit)
+```
+
+
+## Comparison
+```{r}
+res <- resamples(list(GLM = model.glm, 
+                      GLMNET = logistic_model, 
+                      GAM = model.gam,
+                      MARS = model.mars,
+                      LDA = model.lda,
+                      RIDGE = ridge.fit,
+                      ELASTIC = enet.fit))
+summary(res)
+
+a=bwplot(res, metric = c("ROC"))
+```
+through the resampling, the GAM has the highest ROC
+
+Now let's look at the test data performance.
+```{r, warning=FALSE}
+gam.pred <- predict(model.gam, newdata = wine_data[-train,], type = "prob")[,2]
+
+roc.gam <- roc(wine_data$quality[-train], gam.pred)
+
+
+auc <- roc.gam$auc[1]
+auc
+
+test_pred = rep("bad", length(gam.pred))
+test_pred[mars_pred > 0.5] = "good"
+confusionMatrix(data = as.factor(test_pred),
+                reference = wine_data$quality[-train],
+                positive = "good")
+
+plot(roc.gam, legacy.axis = TRUE)
+```
+
+
+```{r,echo=F,warning=FALSE}
+library(DALEX)
+gam = DALEX::explain(model.gam,label = "gam",data = x,y = y %>% as.numeric(),verbose = F)
+gam_important =  model_parts(gam)
+gam_int = plot(gam_important)
+```
